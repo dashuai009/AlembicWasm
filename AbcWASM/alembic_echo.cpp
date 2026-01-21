@@ -16,7 +16,6 @@
 
 #include <cassert>
 #include <memory>
-#include <sstream>
 
 using namespace emscripten;
 using namespace ::Alembic::AbcGeom;
@@ -24,7 +23,7 @@ using namespace ::Alembic::AbcCoreAbstract;
 
 static const std::string g_sep(";");
 
-// Forward declarations for helper functions based on existing AbcEcho code
+// Forward declarations for helper functions
 void visitProperties(Alembic::Abc::ICompoundProperty, std::stringstream &,
                      const std::string &);
 void visitCompoundProperty(Alembic::Abc::ICompoundProperty iProp,
@@ -133,30 +132,92 @@ void visitCompoundProperty(Alembic::Abc::ICompoundProperty iProp,
     visitProperties(iProp, result, indent + "  ");
 }
 
-void visitObject(Alembic::Abc::IObject iObj, std::stringstream &result,
-                 const std::string &indent) {
+// Enhanced function to specifically handle geometric objects and extract vertex data
+void visitGeoObject(Alembic::Abc::IObject iObj, std::stringstream &result,
+                    const std::string &indent) {
     std::string path = iObj.getFullName();
+    std::string schema = iObj.getMetaData().get("schema");
 
     if (path != "/") {
-        result << "Object " << "name=" << path << std::endl;
+        result << "Object " << "name=" << path << g_sep << "schema=" << schema << std::endl;
     }
 
-    // Get the properties
-    Alembic::Abc::ICompoundProperty props = iObj.getProperties();
-    visitProperties(props, result, indent);
+    // Try to identify if this object is a geometric type and extract its data
+    if (iObj.getMetaData().get("schema") == "AbcGeom_PolyMesh_v2") {
+        // Handle PolyMesh geometry
+        try {
+            Alembic::AbcGeom::IPolyMesh pmesh(iObj, Alembic::Abc::kWrapExisting);
+            Alembic::AbcGeom::IPolyMeshSchema pmeshSchema = pmesh.getSchema();
+
+            // Extract vertex positions
+            Alembic::Abc::P3fArraySamplePtr posSample;
+            pmeshSchema.getPositionsProperty().get(posSample);
+
+            // Output vertex count info
+            if (posSample) {
+                result << indent << "  Geometry vertex_count=" << posSample->size() << std::endl;
+            }
+
+            // Extract face counts and indices if they exist
+            Alembic::Abc::Int32ArraySamplePtr faceIndices;
+            pmeshSchema.getFaceIndicesProperty().get(faceIndices);
+
+            Alembic::Abc::Int32ArraySamplePtr faceCounts;
+            pmeshSchema.getFaceCountsProperty().get(faceCounts);
+
+            if (faceIndices && faceCounts) {
+                result << indent << "  Geometry face_count=" << faceCounts->size() << std::endl;
+            }
+
+        } catch (const std::exception& e) {
+            result << indent << "  Error parsing PolyMesh: " << e.what() << std::endl;
+        }
+    }
+    else if (iObj.getMetaData().get("schema") == "AbcGeom_Points_v1") {
+        // Handle point cloud
+        try {
+            Alembic::AbcGeom::IPoints pts(iObj, Alembic::Abc::kWrapExisting);
+            Alembic::AbcGeom::IPointsSchema ptsSchema = pts.getSchema();
+
+            Alembic::Abc::P3fArraySamplePtr posSample;
+            ptsSchema.getPositionsProperty().get(posSample);
+
+            if (posSample) {
+                result << indent << "  Geometry points_count=" << posSample->size() << std::endl;
+            }
+        } catch (const std::exception& e) {
+            result << indent << "  Error parsing Points: " << e.what() << std::endl;
+        }
+    }
+    else if (iObj.getMetaData().get("schema") == "AbcGeom_Curve_v2") {
+        // Handle curves
+        try {
+            Alembic::AbcGeom::ICurves curvesObj(iObj, Alembic::Abc::kWrapExisting);
+            Alembic::AbcGeom::ICurvesSchema curveSchema = curvesObj.getSchema();
+
+            Alembic::Abc::P3fArraySamplePtr posSample;
+            curveSchema.getPositionsProperty().get(posSample);
+
+            if (posSample) {
+                result << indent << "  Geometry curve_points_count=" << posSample->size() << std::endl;
+            }
+        } catch (const std::exception& e) {
+            result << indent << "  Error parsing Curves: " << e.what() << std::endl;
+        }
+    }
 
     // Visit child objects
     for (size_t i = 0; i < iObj.getNumChildren(); i++) {
         Alembic::Abc::IObject child(iObj, iObj.getChildHeader(i).getName());
-        visitObject(child, result, indent);
+        visitGeoObject(child, result, indent);
     }
 }
 
 std::string read_alembic_structure(const std::string &filename) {
     std::stringstream result;
 
-    result << "AbcEcho for Alembic WASM Module\n";
-    result << "  Processing file from filesystem: " << filename << "\n";
+    result << "AbcEcho for Alembic WASM Module\\n";
+    result << "  Processing file from filesystem: " << filename << "\\n";
 
     try {
         // Use factory to create archive from file
@@ -166,7 +227,7 @@ std::string read_alembic_structure(const std::string &filename) {
 
         if (archive) {
             result << "  Abc version: "
-                   << Alembic::AbcCoreAbstract::GetLibraryVersion() << "\n\n";
+                   << Alembic::AbcCoreAbstract::GetLibraryVersion() << "\\n\\n";
 
             // Get archive info
             std::string appName;
@@ -191,12 +252,12 @@ std::string read_alembic_structure(const std::string &filename) {
                 result << std::endl;
             }
 
-            visitObject(archive.getTop(), result, "");
+            visitGeoObject(archive.getTop(), result, "");
         } else {
-            result << "  Error: Could not open file " << filename << "\n";
+            result << "  Error: Could not open file " << filename << "\\n";
         }
     } catch (const std::exception &e) {
-        result << "  Error: " << e.what() << "\n";
+        result << "  Error: " << e.what() << "\\n";
     }
 
     return result.str();
@@ -252,18 +313,16 @@ class MemoryBufferInputStream : public std::istream {
     MemoryBufferStreamBuf buffer_streambuf_;
 };
 
-// Memory buffer reader implementation for WASM environment
-// Using proper Alembic Ogawa API for memory-based reading
-std::string
-read_alembic_structure_from_memory(const std::vector<std::uint8_t> &buffer) {
+// Enhanced memory-based reader that also gets geometry data
+std::string read_alembic_structure_from_memory(const std::vector<std::uint8_t> &buffer) {
     std::stringstream result;
 
-    result << "AbcEcho for Alembic WASM Module\n";
+    result << "AbcEcho for Alembic WASM Module\\n";
     result << "  Processing file from memory buffer: " << buffer.size()
-           << " bytes\n";
+           << " bytes\\n";
 
     if (buffer.empty()) {
-        result << "  Error: Empty buffer received.\n";
+        result << "  Error: Empty buffer received.\\n";
         return result.str();
     }
 
@@ -272,8 +331,8 @@ read_alembic_structure_from_memory(const std::vector<std::uint8_t> &buffer) {
 
         // Create an input stream from our buffer
         MemoryBufferInputStream memoryStream(buffer);
-        memoryStream.clear();                 // 清除 failbit/eofbit
-        memoryStream.seekg(0, std::ios::beg); // 定位到开头
+        memoryStream.clear();
+        memoryStream.seekg(0, std::ios::beg);
         std::vector<std::istream *> streams;
 
         streams.push_back(&memoryStream);
@@ -288,7 +347,7 @@ read_alembic_structure_from_memory(const std::vector<std::uint8_t> &buffer) {
 
         if (archive && coreType != IFactory::kUnknown) {
             result << "  Abc version: "
-                   << Alembic::AbcCoreAbstract::GetLibraryVersion() << "\n\n";
+                   << Alembic::AbcCoreAbstract::GetLibraryVersion() << "\\n\\n";
 
             // Get archive info
             std::string appName;
@@ -313,20 +372,148 @@ read_alembic_structure_from_memory(const std::vector<std::uint8_t> &buffer) {
                 result << std::endl;
             }
 
-            visitObject(archive.getTop(), result, "");
+            visitGeoObject(archive.getTop(), result, "");
         } else {
             result << "  Error: Could not create valid Alembic archive from "
-                      "memory buffer\n";
+                      "memory buffer\\n";
         }
     } catch (const Alembic::Util::Exception &e) {
-        result << "  Error: Alembic exception occurred: " << e.what() << "\n";
+        result << "  Error: Alembic exception occurred: " << e.what() << "\\n";
     } catch (const std::exception &e) {
-        result << "  Error: " << e.what() << "\n";
+        result << "  Error: " << e.what() << "\\n";
     } catch (...) {
-        result << "  Error: Unknown error occurred while parsing buffer\n";
+        result << "  Error: Unknown error occurred while parsing buffer\\n";
     }
 
     return result.str();
+}
+
+// For actual vertex data extraction, we need a more complex function
+std::vector<float> get_mesh_vertices(const std::string &filename) {
+    std::vector<float> vertices;
+
+    try {
+        Alembic::AbcCoreFactory::IFactory factory;
+        factory.setPolicy(Alembic::Abc::ErrorHandler::kQuietNoopPolicy);
+        Alembic::Abc::IArchive archive = factory.getArchive(filename);
+
+        if (archive) {
+            Alembic::Abc::IObject top = archive.getTop();
+
+            // Recursive function to find PolyMesh objects and extract vertex data
+            std::function<void(Alembic::Abc::IObject, std::vector<float>&)>
+            extractVertices = [&](Alembic::Abc::IObject obj, std::vector<float>& verts) {
+                // Check if this is a PolyMesh
+                if (obj.getMetaData().get("schema") == "AbcGeom_PolyMesh_v2") {
+                    try {
+                        Alembic::AbcGeom::IPolyMesh pmesh(obj, Alembic::Abc::kWrapExisting);
+                        Alembic::AbcGeom::IPolyMeshSchema pmeshSchema = pmesh.getSchema();
+
+                        Alembic::Abc::P3fArraySamplePtr posSample;
+                        pmeshSchema.getPositionsProperty().get(posSample);
+
+                        // Add all vertex positions to the vector
+                        if (posSample) {
+                            size_t numPoints = posSample->size();
+                            for (size_t i = 0; i < numPoints; ++i) {
+                                Alembic::Abc::V3f v = (*posSample)[i];
+                                verts.push_back(v.x);
+                                verts.push_back(v.y);
+                                verts.push_back(v.z);
+                            }
+                        }
+                    } catch (...) {
+                        // If PolyMesh parsing fails, continue with children
+                    }
+                }
+
+                // Visit child objects
+                for (size_t i = 0; i < obj.getNumChildren(); i++) {
+                    Alembic::Abc::IObject child(obj, obj.getChildHeader(i).getName());
+                    extractVertices(child, verts);
+                }
+            };
+
+            extractVertices(top, vertices);
+        }
+    } catch (...) {
+        // Error occurred, return empty vertices vector
+    }
+
+    return vertices;
+}
+
+
+// Memory version of getting mesh vertices
+std::vector<float> get_mesh_vertices_from_memory(const std::vector<std::uint8_t> &buffer) {
+    std::vector<float> vertices;
+
+    try {
+        using namespace Alembic::AbcCoreFactory;
+
+        // The MemoryBufferInputStream is already defined in the file
+        MemoryBufferInputStream memoryStream(buffer);
+        memoryStream.clear();                 // Clear failbit/eofbit
+        memoryStream.seekg(0, std::ios::beg); // Position to beginning
+        std::vector<std::istream *> streams;
+
+        streams.push_back(&memoryStream);
+
+        // Create factory
+        IFactory factory;
+        factory.setPolicy(Alembic::Abc::ErrorHandler::kQuietNoopPolicy);
+
+        // Use streams to create archive
+        IFactory::CoreType coreType;
+        Alembic::Abc::IArchive archive = factory.getArchive(streams, coreType);
+
+        if (archive && coreType != IFactory::kUnknown) {
+            Alembic::Abc::IObject top = archive.getTop();
+
+            // Recursive function to find PolyMesh objects and extract vertex data
+            std::function<void(Alembic::Abc::IObject, std::vector<float>&)>
+            extractVertices = [&](Alembic::Abc::IObject obj, std::vector<float>& verts) {
+                // Check if this is a PolyMesh
+                if (obj.getMetaData().get("schema") == "AbcGeom_PolyMesh_v1") {
+                    try {
+                        Alembic::AbcGeom::IPolyMesh pmesh(obj, Alembic::Abc::kWrapExisting);
+                        Alembic::AbcGeom::IPolyMeshSchema pmeshSchema = pmesh.getSchema();
+
+                        Alembic::Abc::P3fArraySamplePtr posSample;
+                        pmeshSchema.getPositionsProperty().get(posSample);
+
+                        // Add all vertex positions to the vector
+                        if (posSample) {
+                            size_t numPoints = posSample->size();
+                            for (size_t i = 0; i < numPoints; ++i) {
+                                Alembic::Abc::V3f v = (*posSample)[i];
+                                verts.push_back(v.x);
+                                verts.push_back(v.y);
+                                verts.push_back(v.z);
+                            }
+                        }
+                    } catch (...) {
+                        // If PolyMesh parsing fails, continue with children
+                    }
+                } else {
+                    std::cout << obj.getMetaData().get("schema") << "\n";
+                }
+
+                // Visit child objects
+                for (size_t i = 0; i < obj.getNumChildren(); i++) {
+                    Alembic::Abc::IObject child(obj, obj.getChildHeader(i).getName());
+                    extractVertices(child, verts);
+                }
+            };
+
+            extractVertices(top, vertices);
+        }
+    } catch (...) {
+        // Error occurred, return empty vertices vector
+    }
+
+    std::cout <<vertices.size() << "adfasdf\n";
+    return vertices;
 }
 
 // Binding code for JavaScript
@@ -334,7 +521,10 @@ EMSCRIPTEN_BINDINGS(my_module) {
     function("read_alembic_structure", &read_alembic_structure);
     function("read_alembic_structure_from_memory",
              &read_alembic_structure_from_memory);
+    function("get_mesh_vertices", &get_mesh_vertices);
+    function("get_mesh_vertices_from_memory", &get_mesh_vertices_from_memory);
 
     // Register std::vector bindings for array data transfer
     register_vector<std::uint8_t>("VectorU8");
+    register_vector<float>("VectorFloat");
 };

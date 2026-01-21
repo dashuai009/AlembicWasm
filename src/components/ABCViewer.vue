@@ -2,12 +2,7 @@
   <div class="viewer-container">
     <canvas ref="canvasRef" />
     <div class="controls">
-      <input
-        type="file"
-        @change="handleFileUpload"
-        accept=".abc"
-        id="abcFileInput"
-      />
+      <input type="file" @change="handleFileUpload" accept=".abc" id="abcFileInput" />
       <label for="abcFileInput" class="file-label">Choose ABC File</label>
       <button @click="resetScene" class="reset-btn">Reset Scene</button>
     </div>
@@ -106,18 +101,17 @@ const handleFileUpload = (event: Event) => {
   }
 };
 
-const loadABCModel = (buffer: ArrayBuffer) => {
+const loadABCModel = async (buffer: ArrayBuffer) => {
   // Remove existing model if present
   if (currentModel) {
     scene.remove(currentModel);
   }
 
   try {
-    // Parse the buffer directly
-    const model = loader.parse(buffer);
+    // Use the async processDataAsync method to parse ABC data with WASM
+    const model = await loader.processDataAsync(buffer);
     currentModel = model;
     scene.add(currentModel);
-
     console.log('ABC model loaded successfully');
   } catch (error) {
     console.error('Error loading ABC model:', error);
@@ -138,8 +132,10 @@ const resetScene = () => {
     wireframe: true
   });
   const sphere = new THREE.Mesh(geometry, material);
-  scene.add(sphere);
-  currentModel = sphere;
+  const group = new THREE.Group(); // Wrap mesh in a group to maintain proper type
+  group.add(sphere);
+  scene.add(group);
+  currentModel = group;
 };
 
 onMounted(() => {
