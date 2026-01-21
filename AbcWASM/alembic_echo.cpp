@@ -516,6 +516,149 @@ std::vector<float> get_mesh_vertices_from_memory(const std::vector<std::uint8_t>
     return vertices;
 }
 
+std::string get_alembic_top_object_from_memory(const std::vector<std::uint8_t> &buffer) {
+    std::stringstream result;
+
+    result << "Top Object from AbcEcho for Alembic WASM Module\n";
+    result << "  Processing top object from memory buffer: " << buffer.size()
+           << " bytes\n";
+
+    if (buffer.empty()) {
+        result << "  Error: Empty buffer received.\n";
+        return result.str();
+    }
+
+    try {
+        using namespace Alembic::AbcCoreFactory;
+
+        // Create an input stream from our buffer
+        MemoryBufferInputStream memoryStream(buffer);
+        memoryStream.clear();
+        memoryStream.seekg(0, std::ios::beg);
+        std::vector<std::istream *> streams;
+
+        streams.push_back(&memoryStream);
+
+        // Create factory
+        IFactory factory;
+        factory.setPolicy(Alembic::Abc::ErrorHandler::kQuietNoopPolicy);
+
+        // Use streams to create archive
+        IFactory::CoreType coreType;
+        Alembic::Abc::IArchive archive = factory.getArchive(streams, coreType);
+
+        if (archive && coreType != IFactory::kUnknown) {
+            // Get the top object directly
+            Alembic::Abc::IObject topObject = archive.getTop();
+
+            result << "  Top object name: " << topObject.getName() << "\n";
+            result << "  Top object full name: " << topObject.getFullName() << "\n";
+            result << "  Top object metadata: " << topObject.getMetaData().get("schema") << "\n";
+            result << "  Number of children: " << topObject.getNumChildren() << "\n";
+
+            // Get additional archive info
+            std::string appName;
+            std::string libraryVersionString;
+            Alembic::Util::uint32_t libraryVersion;
+            std::string whenWritten;
+            std::string userDescription;
+            Alembic::Abc::GetArchiveInfo(archive, appName, libraryVersionString,
+                                        libraryVersion, whenWritten,
+                                        userDescription);
+
+            if (!appName.empty()) {
+                result << "  file written by: " << appName << std::endl;
+                result << "  using Alembic : " << libraryVersionString << std::endl;
+                result << "  written on : " << whenWritten << std::endl;
+                result << "  user description : " << userDescription << std::endl;
+            } else {
+                result << "  (file doesn't have any ArchiveInfo)" << std::endl;
+            }
+        } else {
+            result << "  Error: Could not create valid Alembic archive from memory buffer\n";
+        }
+    } catch (const Alembic::Util::Exception &e) {
+        result << "  Error: Alembic exception occurred: " << e.what() << "\n";
+    } catch (const std::exception &e) {
+        result << "  Error: " << e.what() << "\n";
+    } catch (...) {
+        result << "  Error: Unknown error occurred while parsing buffer\n";
+    }
+
+    return result.str();
+}
+
+// Implement constructor for AlembicObjectHandle
+AlembicObjectHandle::AlembicObjectHandle(const std::vector<std::uint8_t>& buffer) : m_valid(false) {
+    if (buffer.empty()) {
+        return;
+    }
+
+    try {
+        using namespace Alembic::AbcCoreFactory;
+
+        // Create an input stream from our buffer
+        MemoryBufferInputStream memoryStream(buffer);
+        memoryStream.clear();
+        memoryStream.seekg(0, std::ios::beg);
+        std::vector<std::istream *> streams;
+
+        streams.push_back(&memoryStream);
+
+        // Create factory
+        IFactory factory;
+        factory.setPolicy(Alembic::Abc::ErrorHandler::kQuietNoopPolicy);
+
+        // Use streams to create archive
+        IFactory::CoreType coreType;
+        Alembic::Abc::IArchive archive = factory.getArchive(streams, coreType);
+
+        if (archive && coreType != IFactory::kUnknown) {
+            // Get the top object
+            m_object = archive.getTop();
+            m_valid = true;
+        }
+    } catch (...) {
+        m_valid = false;
+    }
+}
+
+std::string AlembicObjectHandle::getName() const {
+    if (!m_valid) return "";
+    return m_object.getName();
+}
+
+std::string AlembicObjectHandle::getFullName() const {
+    if (!m_valid) return "";
+    return m_object.getFullName();
+}
+
+std::string AlembicObjectHandle::getSchema() const {
+    if (!m_valid) return "";
+    return m_object.getMetaData().get("schema");
+}
+
+int AlembicObjectHandle::getNumChildren() const {
+    if (!m_valid) return 0;
+    return static_cast<int>(m_object.getNumChildren());
+}
+
+bool AlembicObjectHandle::isValid() const {
+    return m_valid && m_object.valid();
+}
+
+std::string AlembicObjectHandle::getChildName(int index) const {
+    if (!m_valid || index < 0 || index >= static_cast<int>(m_object.getNumChildren())) {
+        return "";
+    }
+    try {
+        Alembic::Abc::IObject child = m_object.getChild(index);
+        return child.getName();
+    } catch (...) {
+        return "";
+    }
+}
+
 // Binding code for JavaScript
 EMSCRIPTEN_BINDINGS(my_module) {
     function("read_alembic_structure", &read_alembic_structure);
@@ -523,8 +666,19 @@ EMSCRIPTEN_BINDINGS(my_module) {
              &read_alembic_structure_from_memory);
     function("get_mesh_vertices", &get_mesh_vertices);
     function("get_mesh_vertices_from_memory", &get_mesh_vertices_from_memory);
+    function("get_alembic_top_object_from_memory", &get_alembic_top_object_from_memory);
 
     // Register std::vector bindings for array data transfer
     register_vector<std::uint8_t>("VectorU8");
     register_vector<float>("VectorFloat");
+
+    // Register the AlembicObjectHandle class for use in JavaScript
+    class_<AlembicObjectHandle>("AlembicObjectHandle")
+        .constructor<const std::vector<std::uint8_t>&>()
+        .function("getName", &AlembicObjectHandle::getName)
+        .function("getFullName", &AlembicObjectHandle::getFullName)
+        .function("getSchema", &AlembicObjectHandle::getSchema)
+        .function("getNumChildren", &AlembicObjectHandle::getNumChildren)
+        .function("isValid", &AlembicObjectHandle::isValid)
+        .function("getChildName", &AlembicObjectHandle::getChildName);
 };

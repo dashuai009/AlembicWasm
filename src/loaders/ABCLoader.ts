@@ -226,6 +226,22 @@ export class ABCLoader extends THREE.Loader {
       const meshVertices = await this.getMeshVertices(buffer);
       console.log(meshVertices)
 
+      // Test the new AlembicObjectHandle functionality
+      const topObjectHandle = await this.getTopObjectHandle(buffer);
+      if (topObjectHandle) {
+        console.log('Top object name:', topObjectHandle.getName());
+        console.log('Top object full name:', topObjectHandle.getFullName());
+        console.log('Top object schema:', topObjectHandle.getSchema());
+        console.log('Number of children:', topObjectHandle.getNumChildren());
+        console.log('Is valid:', topObjectHandle.isValid());
+
+        // Print child names if any
+        const numChildren = topObjectHandle.getNumChildren();
+        for (let i = 0; i < numChildren; i++) {
+          console.log(`Child ${i} name:`, topObjectHandle.getChildName(i));
+        }
+      }
+
       if (meshVertices.length > 0) {
         // Have actual mesh vertices, create proper geometry
         return this.createGeometryFromVertices(meshVertices);
@@ -315,6 +331,44 @@ export class ABCLoader extends THREE.Loader {
     }
 
     return group;
+  }
+
+  /**
+   * Get AlembicObjectHandle for the top-level object in the Alembic file
+   * This allows interaction with the IObject properties via WASM
+   */
+  async getTopObjectHandle(buffer: ArrayBuffer): Promise<any> {
+    // Initialize WASM module
+    const module = await ABCLoader.initWasmModule();
+
+    if (!module) {
+      throw new Error('WASM module not initialized');
+    }
+
+    // Convert ArrayBuffer to Uint8Array
+    const uint8Array = new Uint8Array(buffer);
+
+    // Create the vector in WASM memory space
+    const vectorData = new module.VectorU8();
+
+    // Add data to the vector
+    for (let i = 0; i < uint8Array.length; i++) {
+      vectorData.push_back(uint8Array[i]);
+    }
+
+    try {
+      // Create a new AlembicObjectHandle from the buffer
+      const handle = new module.AlembicObjectHandle(vectorData);
+
+      // Clean up the vector after creating the handle
+      vectorData.delete();
+
+      return handle;
+    } catch (error) {
+      console.error("Error creating AlembicObjectHandle:", error);
+      vectorData.delete();
+      return null;
+    }
   }
 
   // Dispose method for cleanup
