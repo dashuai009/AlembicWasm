@@ -39,8 +39,12 @@ class MemoryBufferStreamBuf : public std::streambuf {
   public:
     MemoryBufferStreamBuf(const std::vector<std::uint8_t> &buffer)
         : buffer_(buffer) {
-        char *base = (char *)buffer_.data();
-        setg(base, base, base + buffer_.size());
+        if (!buffer.empty()) {
+            char *base = const_cast<char *>(reinterpret_cast<const char *>(buffer_.data()));
+            setg(base, base, base + buffer_.size());
+        } else {
+            setg(nullptr, nullptr, nullptr); // Handle empty buffer
+        }
     }
 
   protected:
@@ -48,6 +52,8 @@ class MemoryBufferStreamBuf : public std::streambuf {
                      std::ios_base::openmode which) override {
         if (!(which & std::ios_base::in))
             return pos_type(off_type(-1));
+
+        if (!eback()) return pos_type(off_type(-1)); // No buffer
 
         char *begin = eback();
         char *end = egptr();
@@ -690,12 +696,13 @@ std::optional<Alembic::AbcGeom::M44d> xformGetMatrix(const IObject &iObj) {
 
             // 取某个采样（这里取第0帧；你也可以按时间取）
             Alembic::AbcGeom::XformSample xs;
+            // 默认取第一帧，如果是动画则可能需要考虑不同的帧
             xSchema.get(xs, 0);
 
             // 直接拿 4x4 矩阵
             Alembic::AbcGeom::M44d m = xs.getMatrix();
 
-            // // 是否“继承父变换”（常用信息）
+            // // 是否"继承父变换"（常用信息）
             // bool inherits = xSchema.getInheritsXforms();
 
             return {m};
@@ -711,9 +718,16 @@ std::vector<float> get_mesh_vertices(const IObject &obj) {
     Alembic::AbcGeom::IPolyMesh pmesh(obj, Alembic::Abc::kWrapExisting);
     Alembic::AbcGeom::IPolyMeshSchema pmeshSchema = pmesh.getSchema();
 
+    // 检查是否为常量几何（不变形动画）
+    bool isConstant = pmeshSchema.isConstant();
+    std::cout << "isConstant:" << isConstant << "\n";
+    std::cout << "getNumSamples:" << pmeshSchema.getNumSamples() << "\n";
+
+    // 获取位置属性
     Alembic::Abc::P3fArraySamplePtr posSample;
     pmeshSchema.getPositionsProperty().get(posSample);
 
+    // 获取面索引和面数量
     Alembic::Abc::Int32ArraySamplePtr faceIndicesSample;
     pmeshSchema.getFaceIndicesProperty().get(faceIndicesSample);
     Alembic::Abc::Int32ArraySamplePtr faceCountsSample;
@@ -770,6 +784,68 @@ std::vector<float> get_mesh_vertices(const IObject &obj) {
     //     }
     // }
     return verts;
+}
+
+// 新增函数：获取所有帧的顶点数据
+std::vector<std::vector<float>> get_animated_mesh_vertices(const IObject &obj) {
+    std::vector<std::vector<float>> allFramesVertices;
+
+    Alembic::AbcGeom::IPolyMesh pmesh(obj, Alembic::Abc::kWrapExisting);
+    Alembic::AbcGeom::IPolyMeshSchema pmeshSchema = pmesh.getSchema();
+
+    // 获取总采样数（帧数）
+    size_t numSamples = pmeshSchema.getNumSamples();
+    std::cout << "Total number of samples for mesh: " << numSamples << "\n";
+
+    // 获取面索引和面数量（这些通常不随时间变化）
+    Alembic::Abc::Int32ArraySamplePtr faceIndicesSample;
+    pmeshSchema.getFaceIndicesProperty().get(faceIndicesSample);
+    Alembic::Abc::Int32ArraySamplePtr faceCountsSample;
+    pmeshSchema.getFaceCountsProperty().get(faceCountsSample);
+
+    // 遍历每一帧
+    for (size_t sampleIndex = 0; sampleIndex < numSamples; ++sampleIndex) {
+        std::vector<float> frameVertices;
+
+        // 获取当前帧顶点位置
+        Alembic::Abc::P3fArraySamplePtr posSample;
+        pmeshSchema.getPositionsProperty().get(posSample, sampleIndex);
+
+        // 根据faceIndices展开pos
+        if (faceIndicesSample && faceCountsSample) {
+            size_t numFaces = faceCountsSample->size();
+            size_t currentFaceStart = 0;
+
+            for (size_t i = 0; i < numFaces; ++i) {
+                size_t faceCount = faceCountsSample->get()[i];
+                size_t faceEnd = currentFaceStart + faceCount;
+
+                for (size_t j = currentFaceStart + 1; j < faceEnd - 1; ++j) {
+                    Alembic::Abc::V3f v =
+                        (*posSample)[(*faceIndicesSample)[currentFaceStart]];
+                    frameVertices.push_back(v.x);
+                    frameVertices.push_back(v.y);
+                    frameVertices.push_back(v.z);
+
+                    v = (*posSample)[(*faceIndicesSample)[j]];
+                    frameVertices.push_back(v.x);
+                    frameVertices.push_back(v.y);
+                    frameVertices.push_back(v.z);
+
+                    v = (*posSample)[(*faceIndicesSample)[j + 1]];
+                    frameVertices.push_back(v.x);
+                    frameVertices.push_back(v.y);
+                    frameVertices.push_back(v.z);
+                }
+                currentFaceStart += faceCount;
+            }
+        }
+
+        allFramesVertices.push_back(frameVertices);
+        std::cout << "Processed sample " << sampleIndex << ", vertices: " << frameVertices.size()/3 << "\n";
+    }
+
+    return allFramesVertices;
 }
 
 auto WrapCamera(const IObject &obj) -> Alembic::AbcGeom::ICamera {
@@ -1053,4 +1129,6 @@ EMSCRIPTEN_BINDINGS(my_module) {
                   }));
 
     function("getMeshVertices", &get_mesh_vertices);
+    function("getAnimatedMeshVertices", &get_animated_mesh_vertices);
+    register_vector<std::vector<float>>("VectorVectorFloat");
 };

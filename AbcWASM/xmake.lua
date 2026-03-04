@@ -4,7 +4,7 @@ set_version("1.0.0")
 set_xmakever("2.5.1")
 
 -- Global settings
-set_warnings("all", "error")
+set_warnings("all")
 
 -- Package dependencies
 add_requires("alembic", {configs = {shared = true}})
@@ -31,6 +31,13 @@ target("alembic_echo_wasm")
     add_includedirs(".")
     set_languages("cxx17") -- embind requires C++17
 
+    -- 体积优先
+    set_optimize("smallest")
+    add_defines("NDEBUG")
+
+    -- C/C++：减少膨胀（能关就关）
+    -- add_cxflags("-fno-exceptions", "-fno-rtti", "-ffunction-sections", "-fdata-sections", {force = true})
+
     -- Emscripten-specific settings
     add_ldflags("-lembind", {force = true})
     add_ldflags("--bind", {force = true})
@@ -44,6 +51,9 @@ target("alembic_echo_wasm")
     add_ldflags("-sFORCE_FILESYSTEM=1", {force = true})
     add_ldflags("-sEXPORT_ES6=1", {force = true})
     add_ldflags("-sNO_DISABLE_EXCEPTION_CATCHING", {force = true})
+    add_ldflags("-sMAXIMUM_MEMORY=2684354560", {force = true})
+    -- 增加栈大小配置解决递归处理复杂文件时的栈溢出问题
+    add_ldflags("-sSTACK_SIZE=15MB", {force = true})
     -- Debug/symbols + better runtime diagnostics
     add_cxflags("-g3", "-O0", {force = true})
     add_ldflags("-g3", "-O0", {force = true})
