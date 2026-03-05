@@ -22,50 +22,53 @@ target("test_alembic")
     -- Run from project directory (where xmake.lua is located)
     set_rundir("$(projectdir)")
 
--- WASM target for Alembic echo
-target("alembic_echo_wasm")
+local function setup_wasm_common()
     set_kind("binary")
     add_rules("platform.wasm")
     add_files("alembic_echo.cpp")
     add_packages("alembic")
     add_includedirs(".")
-    set_languages("cxx17") -- embind requires C++17
+    set_languages("cxx17")
+    set_extension(".js")
 
-    -- 体积优先
-    set_optimize("smallest")
-    add_defines("NDEBUG")
-
-    -- C/C++：减少膨胀（能关就关）
-    -- add_cxflags("-fno-exceptions", "-fno-rtti", "-ffunction-sections", "-fdata-sections", {force = true})
-
-    -- Emscripten-specific settings
     add_ldflags("-lembind", {force = true})
     add_ldflags("--bind", {force = true})
     add_ldflags("-sWASM=1", {force = true})
     add_ldflags("-sALLOW_MEMORY_GROWTH=1", {force = true})
-    -- add_ldflags("-sEXPORTED_FUNCTIONS=['_malloc','_free']", {force = true})
-    add_ldflags("-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','stringToUTF8','UTF8ToString','FS_createPath','FS_createDataFile']", {force = true})
+    add_ldflags("-sEXPORTED_FUNCTIONS=['_malloc','_free']", {force = true})
+    add_ldflags("-sEXPORTED_RUNTIME_METHODS=['HEAPU8','wasmMemory','ccall','cwrap','stringToUTF8','UTF8ToString','FS_createPath','FS_createDataFile']", {force = true})
     add_ldflags("-sMODULARIZE=1", {force = true})
     add_ldflags("-sEXPORT_NAME=AlembicEchoModule", {force = true})
     add_ldflags("-sENVIRONMENT=web,webview,node,shell,worker", {force = true})
     add_ldflags("-sFORCE_FILESYSTEM=1", {force = true})
     add_ldflags("-sEXPORT_ES6=1", {force = true})
     add_ldflags("-sNO_DISABLE_EXCEPTION_CATCHING", {force = true})
-    add_ldflags("-sMAXIMUM_MEMORY=2684354560", {force = true})
-    -- 增加栈大小配置解决递归处理复杂文件时的栈溢出问题
+    add_ldflags("-sMAXIMUM_MEMORY=4294967296", {force = true})
     add_ldflags("-sSTACK_SIZE=15MB", {force = true})
-    -- Debug/symbols + better runtime diagnostics
-    add_cxflags("-g3", "-O0", {force = true})
-    add_ldflags("-g3", "-O0", {force = true})
+end
 
-    add_ldflags("-sASSERTIONS=2", {force = true})
+target("alembic_echo_wasm")
+    setup_wasm_common()
+    set_optimize("smallest")
+    add_defines("NDEBUG")
+    add_ldflags("-sASSERTIONS=0", {force = true})
+    add_ldflags("-sSTACK_OVERFLOW_CHECK=0", {force = true})
 
-    -- Optional but useful for catching memory issues / stack issues
-    add_ldflags("-sSTACK_OVERFLOW_CHECK=2", {force = true})
-    -- add_ldflags("-sSAFE_HEAP=1", {force = true}) -- 很慢，仅排查内存问题时开
+    -- add_ldflags("--profiling-funcs", {force = true})
+    -- -- 可选：source map（注意体积和部署）
+    -- add_cxflags("-gsource-map", {force = true})
+    -- add_ldflags("-gsource-map", {force = true})
 
     set_targetdir("dist")
 
-    -- Set output format to JS/WASM
-    set_extension(".js")
+target("alembic_echo_wasm_debug")
+    setup_wasm_common()
+    set_optimize("none")
+    add_cxflags("--profiling-funcs", {force = true})
+    add_ldflags("--profiling-funcs", {force = true})
+    add_cxflags("-g3", {force = true})
+    add_ldflags("-g3", {force = true})
+    add_ldflags("-sASSERTIONS=2", {force = true})
+    add_ldflags("-sSTACK_OVERFLOW_CHECK=2", {force = true})
+    set_targetdir("dist-debug")
 

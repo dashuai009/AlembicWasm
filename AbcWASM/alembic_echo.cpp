@@ -40,7 +40,8 @@ class MemoryBufferStreamBuf : public std::streambuf {
     MemoryBufferStreamBuf(const std::vector<std::uint8_t> &buffer)
         : buffer_(buffer) {
         if (!buffer.empty()) {
-            char *base = const_cast<char *>(reinterpret_cast<const char *>(buffer_.data()));
+            char *base = const_cast<char *>(
+                reinterpret_cast<const char *>(buffer_.data()));
             setg(base, base, base + buffer_.size());
         } else {
             setg(nullptr, nullptr, nullptr); // Handle empty buffer
@@ -53,7 +54,8 @@ class MemoryBufferStreamBuf : public std::streambuf {
         if (!(which & std::ios_base::in))
             return pos_type(off_type(-1));
 
-        if (!eback()) return pos_type(off_type(-1)); // No buffer
+        if (!eback())
+            return pos_type(off_type(-1)); // No buffer
 
         char *begin = eback();
         char *end = egptr();
@@ -737,6 +739,17 @@ std::vector<float> get_mesh_vertices(const IObject &obj) {
     if (faceIndicesSample && faceCountsSample) {
         size_t numFaces = faceCountsSample->size();
 
+        // 预计算三角化后的总 float 数量：每个面产生 (faceCount - 2)
+        // 个三角形，每个三角形 3 个顶点 × 3 个 float
+        size_t totalFloats = 0;
+        for (size_t i = 0; i < numFaces; ++i) {
+            size_t faceCount = faceCountsSample->get()[i];
+            if (faceCount >= 3) {
+                totalFloats += (faceCount - 2) * 9;
+            }
+        }
+        verts.reserve(totalFloats);
+
         std::cout << "numFaces: " << numFaces << "\n";
         // 维护一个累加的起始索引
         size_t currentFaceStart = 0;
@@ -814,7 +827,20 @@ std::vector<std::vector<float>> get_animated_mesh_vertices(const IObject &obj) {
         // 根据faceIndices展开pos
         if (faceIndicesSample && faceCountsSample) {
             size_t numFaces = faceCountsSample->size();
+
+            // 预计算三角化后的总 float 数量：每个面产生 (faceCount - 2)
+            // 个三角形，每个三角形 3 个顶点 × 3 个 float
+            size_t totalFloats = 0;
+            for (size_t i = 0; i < numFaces; ++i) {
+                size_t faceCount = faceCountsSample->get()[i];
+                if (faceCount >= 3) {
+                    totalFloats += (faceCount - 2) * 9;
+                }
+            }
+            frameVertices.resize(totalFloats);
+
             size_t currentFaceStart = 0;
+            size_t writeIndex = 0;
 
             for (size_t i = 0; i < numFaces; ++i) {
                 size_t faceCount = faceCountsSample->get()[i];
@@ -823,26 +849,27 @@ std::vector<std::vector<float>> get_animated_mesh_vertices(const IObject &obj) {
                 for (size_t j = currentFaceStart + 1; j < faceEnd - 1; ++j) {
                     Alembic::Abc::V3f v =
                         (*posSample)[(*faceIndicesSample)[currentFaceStart]];
-                    frameVertices.push_back(v.x);
-                    frameVertices.push_back(v.y);
-                    frameVertices.push_back(v.z);
+                    frameVertices[writeIndex++] = v.x;
+                    frameVertices[writeIndex++] = v.y;
+                    frameVertices[writeIndex++] = v.z;
 
                     v = (*posSample)[(*faceIndicesSample)[j]];
-                    frameVertices.push_back(v.x);
-                    frameVertices.push_back(v.y);
-                    frameVertices.push_back(v.z);
+                    frameVertices[writeIndex++] = v.x;
+                    frameVertices[writeIndex++] = v.y;
+                    frameVertices[writeIndex++] = v.z;
 
                     v = (*posSample)[(*faceIndicesSample)[j + 1]];
-                    frameVertices.push_back(v.x);
-                    frameVertices.push_back(v.y);
-                    frameVertices.push_back(v.z);
+                    frameVertices[writeIndex++] = v.x;
+                    frameVertices[writeIndex++] = v.y;
+                    frameVertices[writeIndex++] = v.z;
                 }
                 currentFaceStart += faceCount;
             }
         }
 
         allFramesVertices.push_back(frameVertices);
-        std::cout << "Processed sample " << sampleIndex << ", vertices: " << frameVertices.size()/3 << "\n";
+        std::cout << "Processed sample " << sampleIndex
+                  << ", vertices: " << frameVertices.size() / 3 << "\n";
     }
 
     return allFramesVertices;
@@ -866,6 +893,13 @@ auto WrapCurves(const IObject &obj) -> Alembic::AbcGeom::ICurves {
     Alembic::AbcGeom::ICurves curves(obj, Alembic::Abc::kWrapExisting);
     return curves;
 }
+
+
+std::vector<std::uint8_t> CreateU8VectorFromPtr(std::uintptr_t ptr, size_t length) {
+    std::vector<std::uint8_t> vector(length);
+    memcpy(vector.data(), reinterpret_cast<const std::uint8_t*>(ptr), length);
+    return vector;
+}
 // Binding code for JavaScript
 EMSCRIPTEN_BINDINGS(my_module) {
     function("read_alembic_structure", &read_alembic_structure);
@@ -876,10 +910,6 @@ EMSCRIPTEN_BINDINGS(my_module) {
     function("get_alembic_top_object_from_memory",
              &get_alembic_top_object_from_memory);
     function("InitTopAlembicObject", &InitTopAlembicObject);
-
-    // Register std::vector bindings for array data transfer
-    register_vector<std::uint8_t>("VectorU8");
-    register_vector<float>("VectorFloat");
 
     class_<Alembic::AbcGeom::M44d>("M44d").function(
         "getValueView", optional_override([](const Alembic::AbcGeom::M44d &m) {
@@ -1098,18 +1128,23 @@ EMSCRIPTEN_BINDINGS(my_module) {
     class_<Alembic::AbcGeom::Int32ArraySample>("AbcInt32ArraySample")
         .smart_ptr<std::shared_ptr<Alembic::AbcGeom::Int32ArraySample>>(
             "AbcInt32ArraySample")
-        .function("getView", optional_override([](Alembic::AbcGeom::Int32ArraySample &sample) {
-            return emscripten::val(emscripten::typed_memory_view(
-                sample.size(), reinterpret_cast<const int32_t *>(sample.get())));
-        }));
+        .function(
+            "getView",
+            optional_override([](Alembic::AbcGeom::Int32ArraySample &sample) {
+                return emscripten::val(emscripten::typed_memory_view(
+                    sample.size(),
+                    reinterpret_cast<const int32_t *>(sample.get())));
+            }));
     class_<Alembic::AbcGeom::P3fArraySample>("AbcP3fArraySample")
         .smart_ptr<std::shared_ptr<Alembic::AbcGeom::P3fArraySample>>(
             "AbcP3fArraySample")
-            .function("getFloatView", optional_override([](Alembic::AbcGeom::P3fArraySample &sample) {
-            return emscripten::val(emscripten::typed_memory_view(
-                sample.size() * 3, reinterpret_cast<const float *>(sample.get())));
-        }));
-
+        .function(
+            "getFloatView",
+            optional_override([](Alembic::AbcGeom::P3fArraySample &sample) {
+                return emscripten::val(emscripten::typed_memory_view(
+                    sample.size() * 3,
+                    reinterpret_cast<const float *>(sample.get())));
+            }));
     emscripten::register_optional<Alembic::AbcGeom::M44d>();
     emscripten::register_optional<IObject>();
     emscripten::function("xformGetMatrix", &xformGetMatrix);
@@ -1130,5 +1165,12 @@ EMSCRIPTEN_BINDINGS(my_module) {
 
     function("getMeshVertices", &get_mesh_vertices);
     function("getAnimatedMeshVertices", &get_animated_mesh_vertices);
+    function("CreateU8VectorFromPtr", &CreateU8VectorFromPtr);
+    // Register std::vector bindings for array data transfer
+    register_vector<std::uint8_t>("VectorU8");
+    register_vector<float>("VectorFloat")
+        .function("view", optional_override([](std::vector<float> &v) {
+                      return val(typed_memory_view(v.size(), v.data()));
+                  }));
     register_vector<std::vector<float>>("VectorVectorFloat");
 };

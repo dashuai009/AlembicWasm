@@ -205,10 +205,8 @@ const loadABCModel = async (buffer: ArrayBuffer) => {
     collectCamerasFromModel(model);
     fitCameraToModel(model);
 
-    setupAnimationMixers(model);
     isAnimationPlaying.value = animationActions.length > 0;
-
-    console.log('ABC model loaded successfully');
+    setupAnimationMixers(model);
   } catch (error) {
     console.error('Error loading ABC model:', error);
     alert('Error loading ABC model: ' + (error as Error).message);

@@ -279,8 +279,10 @@ export class ABCLoader extends THREE.Loader {
 
     // First try the enhanced geometric parsing if possible
     try {
+      let t0 = performance.now();
       // Initialize WASM module
       const module = await ABCLoader.initWasmModule();
+      let t1 = performance.now();
 
       if (!module) {
         throw new Error('WASM module not initialized');
@@ -292,15 +294,16 @@ export class ABCLoader extends THREE.Loader {
 
       // Convert ArrayBuffer to Uint8Array
       const uint8Array = new Uint8Array(buffer);
+      let t2 = performance.now();
 
+      const ptr = module._malloc(uint8Array.length);
+      module.HEAPU8.set(uint8Array, ptr); // 一次性拷贝（内部是 memcpy 级别）
       // Create the vector in WASM memory space
-      const vectorData = new module.VectorU8();
-
-      console.log(`the size of input file is ${uint8Array.length}`)
-      // Add data to the vector
-      for (let i = 0; i < uint8Array.length; i++) {
-        vectorData.push_back(uint8Array[i]);
-      }
+      const vectorData = new module.CreateU8VectorFromPtr(ptr, uint8Array.length);
+      module._free(ptr);
+      let t3 = performance.now();
+      let t4 = performance.now();
+      console.log(`init wasm module: ${t1 - t0}ms, convert arraybuffer to uint8array: ${t2 - t1}ms, create vector: ${t3 - t2}ms, set data: ${t4 - t3}ms`)
 
       {
         // tmp scope
@@ -318,7 +321,7 @@ export class ABCLoader extends THREE.Loader {
           // Get complete hierarchy from WASM using the recursive C++ function
           console.log('=== ALEMBIC HIERARCHY ===');
           result.name = topObjectHandle.getName();
-          await this.createObjectHierarchy(topObjectHandle, 0, result, animationClips, buffer);
+          this.createObjectHierarchy(module, topObjectHandle, 0, result, animationClips, buffer);
 
           console.log("result = ", result);
         } else {
@@ -415,11 +418,9 @@ export class ABCLoader extends THREE.Loader {
   }
 
 
-  private async createCamera(iObj: any): Promise<THREE.PerspectiveCamera> {
-    const module = await ABCLoader.initWasmModule();
-
+  private createCamera(alembicWasmModule: any, iObj: any): THREE.PerspectiveCamera {
     // Wrap the IObject as ICamera
-    const iCamera = module.WrapCamera(iObj);
+    const iCamera = alembicWasmModule.WrapCamera(iObj);
     const cameraSchema = iCamera.getSchema();
 
     // Get the camera sample (first frame)
@@ -470,16 +471,14 @@ export class ABCLoader extends THREE.Loader {
    * @param handle - AlembicObjectHandle to print
    * @param depth - Current depth level for indentation
    */
-  private async createObjectHierarchy(
+  private createObjectHierarchy(
+    alembicWasmModule: any,
     handle: any,
     depth: number,
     parentObj: THREE.Object3D,
     animationClips: THREE.AnimationClip[],
     buffer?: ArrayBuffer
-  ): Promise<void> {
-
-    // Initialize WASM module
-    const module = await ABCLoader.initWasmModule();
+  ): void {
 
     const indent = '  '.repeat(depth); // Two spaces per depth level
     const name = handle.getName() || 'unnamed';
@@ -497,8 +496,8 @@ export class ABCLoader extends THREE.Loader {
         if (child_i_schema.startsWith("AbcGeom_Xform")) {
           let geo = new THREE.Group();
           parentObj.add(geo);
-          await this.createObjectHierarchy(child_i, depth + 1, geo, animationClips, buffer);
-          let xform = module.xformGetMatrix(child_i);
+          this.createObjectHierarchy(alembicWasmModule, child_i, depth + 1, geo, animationClips, buffer);
+          let xform = alembicWasmModule.xformGetMatrix(child_i);
           if (xform) {
             let newXform = new THREE.Matrix4();
             newXform.fromArray(xform.getValueView());
@@ -509,15 +508,12 @@ export class ABCLoader extends THREE.Loader {
           geo.name = child_i.getName();
         } else if (child_i_schema.startsWith("AbcGeom_PolyMesh")) {
           let geo = new THREE.BufferGeometry();
-          let vertices = module.get_mesh_vertices(child_i);
+          let vertices = alembicWasmModule.get_mesh_vertices(child_i);
           // 将 WASM 返回的顶点数据转换为 Float32Array
           const vertexCount = vertices.size();
           let positionArray: Float32Array | null = null;
           if (vertexCount > 0) {
-            positionArray = new Float32Array(vertexCount);
-            for (let j = 0; j < vertexCount; j++) {
-              positionArray[j] = vertices.get(j);
-            }
+            positionArray = new Float32Array(vertices.view());
 
             // 设置 position 属性 (每个顶点3个分量: x, y, z)
             geo.setAttribute('position', new THREE.BufferAttribute(positionArray, 3));
@@ -545,16 +541,16 @@ export class ABCLoader extends THREE.Loader {
           }
 
           parentObj.add(mesh);
-          await this.createObjectHierarchy(child_i, depth + 1, mesh, animationClips, buffer);
+          this.createObjectHierarchy(alembicWasmModule, child_i, depth + 1, mesh, animationClips, buffer);
         } else if (child_i_schema.startsWith("AbcGeom_Camera")) {
-          let cam = await this.createCamera(child_i);
+          let cam = this.createCamera(alembicWasmModule, child_i);
           cam.name = child_i.getName();
           parentObj.add(cam);
-          await this.createObjectHierarchy(child_i, depth + 1, cam, animationClips, buffer);
+          this.createObjectHierarchy(alembicWasmModule, child_i, depth + 1, cam, animationClips, buffer);
         } else if (child_i_schema === "AbcGeom_Curve_v2") {
           // Handle Alembic Curve_v2 schema
-          await this.createCurve(child_i, parentObj);
-          await this.createObjectHierarchy(child_i, depth + 1, parentObj, animationClips, buffer);
+          this.createCurve(alembicWasmModule, child_i, parentObj);
+          this.createObjectHierarchy(alembicWasmModule, child_i, depth + 1, parentObj, animationClips, buffer);
         } else {
           console.log("unhandled mesh", child_i.getMetaDataSchema());
         }
@@ -569,7 +565,7 @@ export class ABCLoader extends THREE.Loader {
     const geometry = mesh.geometry as THREE.BufferGeometry;
     const basePositionAttr = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
 
-    if (!module || !basePositionAttr || !module.getAnimatedMeshVertices) {
+    if (!module || !basePositionAttr) {
       return null;
     }
 
@@ -592,10 +588,7 @@ export class ABCLoader extends THREE.Loader {
         return null;
       }
 
-      const values = new Float32Array(frameValueCount);
-      for (let j = 0; j < frameValueCount; j++) {
-        values[j] = frame.get(j);
-      }
+      const values = new Float32Array(frame.view());
 
       const morph = new THREE.BufferAttribute(values, 3);
       morph.name = `abc_morph_${i}`;
@@ -623,12 +616,10 @@ export class ABCLoader extends THREE.Loader {
    * @param iObj - The Alembic IObject representing the curve
    * @param parentObj - The parent Three.js object to attach the curve to
    */
-  private async createCurve(iObj: any, parentObj: THREE.Object3D): Promise<void> {
+  private createCurve(alembicWasmModule: any, iObj: any, parentObj: THREE.Object3D): void {
     try {
-      const module = await ABCLoader.initWasmModule();
-
       // Wrap the IObject as ICurves
-      const iCurves = module.WrapCurves(iObj);
+      const iCurves = alembicWasmModule.WrapCurves(iObj);
       const curveSchema = iCurves.getSchema();
 
       // Get curve sample data
@@ -646,19 +637,6 @@ export class ABCLoader extends THREE.Loader {
       // console.log(`numCurves: ${numCurves}`);
       const curvesNumVerticesPtr = curveSample.getCurvesNumVertices();
       const curveWrap = curveSample.getWrap();
-
-      // // Get additional curve properties if available
-      // const widthsParam = curveSchema.getWidthsParam();
-      // const normalsParam = curveSchema.getNormalsParam();
-      // const uvsParam = curveSchema.getUVsParam();
-
-      // // Check if these parameters are valid
-      // const hasWidths = widthsParam && widthsParam.valid();
-      // const hasNormals = normalsParam && normalsParam.valid();
-      // const hasUVs = uvsParam && uvsParam.valid();
-
-      // console.log(`Creating curve with ${numCurves} curves, type: ${curveType}, wrap: ${curveWrap}`);
-      // console.log(`Curve properties - Widths: ${hasWidths}, Normals: ${hasNormals}, UVs: ${hasUVs}`);
 
       // Process each curve
       let currentIndex = 0;
@@ -680,7 +658,7 @@ export class ABCLoader extends THREE.Loader {
         }
 
         // Determine if curve is closed based on wrap type
-        const isClosed = curveWrap === module.AbcCurvePeriodicity.kPeriodic;
+        const isClosed = curveWrap === alembicWasmModule.AbcCurvePeriodicity.kPeriodic;
 
         // Create our custom ABC curve
         const abcCurve = new ABCCurve(points, isClosed);

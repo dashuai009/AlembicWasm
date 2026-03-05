@@ -3,17 +3,20 @@ import ABCViewer from './components/ABCViewer.vue'
 </script>
 
 <template>
-  <div class="container">
+  <div class="app-container">
     <ABCViewer />
   </div>
 </template>
 
 <style>
-.container {
+.app-container {
   width: 100%;
   height: 100vh;
   margin: 0;
   padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 </style>
 
