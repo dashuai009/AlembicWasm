@@ -39,7 +39,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted, watch } from 'vue';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import ABCLoader from '../loaders/ABCLoader';
@@ -59,46 +59,51 @@ let controls: OrbitControls;
 let loader: ABCLoader;
 let currentModel: THREE.Group | null = null;
 let defaultCamera: THREE.PerspectiveCamera;
+let clock = new THREE.Clock();
+let mixers: THREE.AnimationMixer[] = [];
+let animationActions: THREE.AnimationAction[] = [];
 
-// ====== 主循环相关（全局唯一）======
 let rafId = 0;
-let lastTime = 0;
-let animatedMeshes: THREE.Mesh[] = [];
 
-function rebuildAnimatedMeshes(root: THREE.Object3D | null) {
-  animatedMeshes = [];
-  if (!root) return;
+const clearAnimations = () => {
+  animationActions.forEach((action) => action.stop());
+  mixers.forEach((mixer) => mixer.stopAllAction());
+  mixers = [];
+  animationActions = [];
+};
+
+const setupAnimationMixers = (root: THREE.Object3D) => {
+  clearAnimations();
 
   root.traverse((obj) => {
-    if (obj instanceof THREE.Mesh && obj.userData.animationFrames) {
-      obj.userData.isPlaying = true;
-      animatedMeshes.push(obj);
-    }
+    if (!(obj instanceof THREE.Mesh)) return;
+
+    const clips = obj.userData.animationClips as THREE.AnimationClip[] | undefined;
+    if (!clips || clips.length === 0) return;
+
+    const mixer = new THREE.AnimationMixer(obj);
+    mixers.push(mixer);
+
+    clips.forEach((clip) => {
+      const action = mixer.clipAction(clip);
+      action.clampWhenFinished = false;
+      action.loop = THREE.LoopRepeat;
+      action.setEffectiveTimeScale(animationSpeed.value);
+      action.paused = !isAnimationPlaying.value;
+      action.play();
+      animationActions.push(action);
+    });
   });
+};
 
-  // UI 状态：只要当前模型里存在动画网格，就默认允许播放按钮控制
-  isAnimationPlaying.value = true;
-  // console.log(`Found ${animatedMeshes.length} animated meshes`);
-}
-// let abcTime = 0;
-
-function mainLoop(t: number) {
+function mainLoop() {
   rafId = requestAnimationFrame(mainLoop);
 
-  const time = t / 1000;
-  const dt = lastTime ? (time - lastTime) : 0;
-  lastTime = time;
-//  abcTime += dt * animationSpeed.value;
+  const dt = clock.getDelta();
   controls?.update();
 
-  // 推进点缓存动画（统一在主循环里做）
-  const speed = animationSpeed.value;
-  for (const mesh of animatedMeshes) {
-    if (mesh.userData.isPlaying) {
-      (loader as ABCLoader).applyAnimationFrame(mesh, dt * speed);
-      (loader as ABCLoader).setAnimationSpeed(mesh, speed);
-      // loader.applyAnimationAtTime(mesh, abcTime); // 注意：传绝对时间，不传 dt
-    }
+  for (const mixer of mixers) {
+    mixer.update(dt);
   }
 
   // 每帧明确清屏，避免残影
@@ -156,7 +161,7 @@ const initScene = () => {
 
   // 启动唯一主循环
   cancelAnimationFrame(rafId);
-  lastTime = 0;
+  clock = new THREE.Clock();
   rafId = requestAnimationFrame(mainLoop);
 };
 
@@ -187,6 +192,7 @@ const loadABCModel = async (buffer: ArrayBuffer) => {
   if (currentModel) {
     scene.remove(currentModel);
     currentModel = null;
+    clearAnimations();
   }
 
   if (!loader) loader = new ABCLoader();
@@ -199,8 +205,8 @@ const loadABCModel = async (buffer: ArrayBuffer) => {
     collectCamerasFromModel(model);
     fitCameraToModel(model);
 
-    // 关键：只收集动画网格，不再启动第二个 RAF
-    rebuildAnimatedMeshes(model);
+    setupAnimationMixers(model);
+    isAnimationPlaying.value = animationActions.length > 0;
 
     console.log('ABC model loaded successfully');
   } catch (error) {
@@ -333,34 +339,31 @@ const resetScene = () => {
   group.add(sphere);
   scene.add(group);
   currentModel = group;
-
-  rebuildAnimatedMeshes(currentModel);
+  clearAnimations();
+  isAnimationPlaying.value = false;
 };
 
-// 动画控制（只改 mesh.userData.isPlaying）
 const toggleAnimation = () => {
-  if (!currentModel) return;
+  if (animationActions.length === 0) return;
 
   const next = !isAnimationPlaying.value;
-  currentModel.traverse((obj) => {
-    if (obj instanceof THREE.Mesh && obj.userData.animationFrames) {
-      obj.userData.isPlaying = next;
-      (loader as ABCLoader).setAnimationPlaying(obj, next);
-    }
+  animationActions.forEach((action) => {
+    action.paused = !next;
   });
-
   isAnimationPlaying.value = next;
 };
 
 const resetAnimation = () => {
-  if (!currentModel) return;
-  currentModel.traverse((obj) => {
-    if (obj instanceof THREE.Mesh && obj.userData.animationFrames) {
-      obj.userData.animationCurrentTime = 0;
-      obj.userData.currentFrame = 0;
-    }
+  if (animationActions.length === 0) return;
+  animationActions.forEach((action) => {
+    action.reset();
+    action.paused = !isAnimationPlaying.value;
   });
 };
+
+watch(animationSpeed, (speed) => {
+  animationActions.forEach((action) => action.setEffectiveTimeScale(speed));
+});
 
 onMounted(() => {
   initScene();
@@ -370,6 +373,7 @@ onMounted(() => {
 onUnmounted(() => {
   cancelAnimationFrame(rafId);
   window.removeEventListener('resize', handleResize);
+  clearAnimations();
   controls?.dispose();
   if (currentModel) {
     scene.remove(currentModel);

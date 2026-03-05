@@ -23,7 +23,7 @@ export class ABCCurve extends THREE.Curve<THREE.Vector3> {
     }
 
     if (this.points.length === 1) {
-      point.copy(this.points[0]);
+      point.copy(this.points[0]!);
       return point;
     }
 
@@ -44,7 +44,7 @@ export class ABCCurve extends THREE.Curve<THREE.Vector3> {
       if (point1 && point2) {
         point.lerpVectors(point1, point2, diff);
       } else {
-        point.copy(this.points[0]); // fallback to first point
+        point.copy(this.points[0]!); // fallback to first point
       }
     } else {
       // For open curves
@@ -57,7 +57,7 @@ export class ABCCurve extends THREE.Curve<THREE.Vector3> {
         if (lastPoint) {
           point.copy(lastPoint);
         } else {
-          point.copy(this.points[0]); // fallback to first point
+          point.copy(this.points[0]!); // fallback to first point
         }
       } else {
         const point1 = positions[index];
@@ -65,7 +65,7 @@ export class ABCCurve extends THREE.Curve<THREE.Vector3> {
         if (point1 && point2) {
           point.lerpVectors(point1, point2, diff);
         } else {
-          point.copy(this.points[0]); // fallback to first point
+          point.copy(this.points[0]!); // fallback to first point
         }
       }
     }
@@ -208,6 +208,8 @@ export class ABCLoader extends THREE.Loader {
     return await this.parseDetailedGeometry(buffer);
   }
 
+  private readonly defaultAnimationFps = 24;
+
   // Parse is still required by THREE.Loader interface but we'll keep it minimal
   parse(_buffer: ArrayBuffer): THREE.Group {
     // In a real implementation with sync parsing, but WASM is async-only
@@ -269,167 +271,11 @@ export class ABCLoader extends THREE.Loader {
   }
 
   /**
-   * Enhanced method to animate mesh vertices over time
-   * This version uses an alternative approach that directly works with the buffer and
-   * traverses the hierarchy to find animated mesh objects
-   */
-  async getAnimatedMeshVertices(buffer: ArrayBuffer, topObjectHandle?: any): Promise<{ frames: Float32Array[], frameTimeInfo?: { start: number, end: number, fps: number } }> {
-    const result: { frames: Float32Array[], frameTimeInfo?: { start: number, end: number, fps: number } } = { frames: [] };
-
-    try {
-      // Initialize WASM module
-      const module = await ABCLoader.initWasmModule();
-
-      if (!module) {
-        throw new Error('WASM module not initialized');
-      }
-
-      console.log('Attempting to extract animated mesh vertices');
-
-      // Use the buffer directly and traverse from top handle if it exists
-      if (!topObjectHandle) {
-        // If no handle provided, let our main parsing method initialize one
-        const uint8Array = new Uint8Array(buffer);
-        const vectorData = new module.VectorU8();
-
-        vectorData.resize(uint8Array.length);
-        for (let i = 0; i < uint8Array.length; i++) {
-          vectorData.set(i, uint8Array[i]); // Use set instead of push_back to avoid memory reallocation
-        }
-
-        try {
-          // Use AlembicObjectHandle with memory buffer to extract animated vertices
-          let mem_buf = new module.MemoryBufferInputStream(vectorData);
-          topObjectHandle = module.InitTopAlembicObject(mem_buf);
-        } catch (e) {
-          console.error('Error initializing Alembic object from buffer for animation extraction:', e);
-        }
-
-        // Clean up buffer resources here, but leave topObjectHandle for use below
-        vectorData.delete();
-      }
-
-      if (topObjectHandle) {
-        console.log('Found top object, attempting to extract animation data recursively');
-
-        // Use a method similar to createObjectHierarchy to find animated mesh objects
-        try {
-          const animatedVerts = await this.extractAnimatedMeshVertices(topObjectHandle, module);
-          if (animatedVerts && animatedVerts.length > 0) {
-            result.frames = animatedVerts;
-            console.log(`Found ${result.frames.length} animated frame sets`);
-          }
-        } catch (e) {
-          console.error('Error during animated vertices extraction via hierarchical approach:', e);
-        }
-
-        // Note: Don't delete topObjectHandle here as it might be used by createObjectHierarchy later
-      }
-
-    } catch (error) {
-      console.error("Error calling WASM getAnimatedMeshVertices function:", error);
-    }
-
-    if (result.frames.length === 0) {
-      console.warn('No animated frames retrieved from WASM module. The .abc file might not contain vertex animations.');
-    }
-
-    return result;
-  }
-
-  /**
-   * Recursive function to find mesh objects in the Alembic hierarchy and extract their animated vertices
-   * This is a specialized helper function for animation data extraction
-   */
-  private async extractAnimatedMeshVertices(handle: any, module: any, depth: number = 0): Promise<Float32Array[]> {
-    let allFrameSets: Float32Array[] = [];
-    const maxDepth = 6;  // Prevent deep recursion causing stack overflow
-    if (depth > maxDepth) return [];
-
-    try {
-      // Get object details
-      const name = handle.getName() || 'unnamed';
-      const schema = handle.getMetaDataSchema() || 'no_schema';
-      const numChildren = handle.getNumChildren();
-
-      console.log(`${'  '.repeat(depth)}Processing object ${name} [${schema}] with ${numChildren} children`);
-
-      // Only try getting animation data if this object is PolyMesh schema
-      if (schema.startsWith("AbcGeom_PolyMesh")) {
-        console.log(`${'  '.repeat(depth)}Found PolyMesh schema, attempting to extract animated vertices`);
-        // try {
-        // Check if this mesh has animated data by examining if its position property is an array property
-        // Only attempt to get animation if the schema has time-varying positions
-        if (module.getAnimatedMeshVertices) {
-          // Add timeout to handle potential freeze issues
-          const animatedVerticesResult = module.getAnimatedMeshVertices(handle);
-
-          if (animatedVerticesResult) {
-            const numFrames = animatedVerticesResult.size();
-
-            // Only continue if there are multiple frames implying animation
-            if (numFrames > 1) {
-              console.log(`${'  '.repeat(depth)}Successfully extracted ${numFrames} animated frames from mesh ${name}`);
-
-              for (let frameIdx = 0; frameIdx < numFrames; frameIdx++) {
-                const frameData = animatedVerticesResult.get(frameIdx);
-                const frameSize = frameData.size();
-
-                if (frameSize > 0) {
-                  const frameArray = new Float32Array(frameSize);
-                  for (let j = 0; j < frameSize; j++) {
-                    frameArray[j] = frameData.get(j);
-                  }
-                  allFrameSets.push(frameArray);
-                }
-              }
-            } else if (numFrames === 1) {
-              console.log(`${'  '.repeat(depth)}Found only 1 frame for mesh ${name}, skipping (not animated)`);
-            } else {
-              console.log(`${'  '.repeat(depth)}No frames found for mesh ${name}`);
-            }
-          } else {
-            console.log(`${'  '.repeat(depth)}No animation data returned for mesh ${name}`);
-          }
-        }
-        // } catch (err) {
-        //   console.warn(`${'  '.repeat(depth)}Could not extract animation from mesh ${name}:`, (err as Error).message);
-        //   // Continue processing even if this mesh fails
-        // }
-      }
-
-      // Process child objects recursively
-      for (let i = 0; i < numChildren; i++) {
-        try {
-          const child = handle.getChild(i);
-          if (child) {
-            // Add a small delay to avoid overwhelming the system
-            const childFrames = await this.extractAnimatedMeshVertices(child, module, depth + 1);
-            if (childFrames && childFrames.length > 0) {
-              allFrameSets = allFrameSets.concat(childFrames);
-              console.log(`${'  '.repeat(depth)}Added ${childFrames.length} frames from child ${i}`);
-            }
-          }
-        } catch (err) {
-          console.warn(`${'  '.repeat(depth)}Error processing child ${i} of ${name}:`, err);
-          // Continue with other children
-        }
-      }
-
-      console.log(`${'  '.repeat(depth)}Completed processing ${name}, found ${allFrameSets.length} frame sets`);
-    } catch (e) {
-      console.error(`Error in extractAnimatedMeshVertices for depth ${depth}:`, e);
-    }
-
-    return allFrameSets;
-  }
-
-
-  /**
    * Enhanced method to parse full geometry data instead of basic structure
    */
   async parseDetailedGeometry(buffer: ArrayBuffer): Promise<THREE.Group> {
     let result = new THREE.Group();
+    const animationClips: THREE.AnimationClip[] = [];
 
     // First try the enhanced geometric parsing if possible
     try {
@@ -472,15 +318,12 @@ export class ABCLoader extends THREE.Loader {
           // Get complete hierarchy from WASM using the recursive C++ function
           console.log('=== ALEMBIC HIERARCHY ===');
           result.name = topObjectHandle.getName();
-          await this.createObjectHierarchy(topObjectHandle, 0, result, buffer);
+          await this.createObjectHierarchy(topObjectHandle, 0, result, animationClips, buffer);
 
           console.log("result = ", result);
         } else {
           console.error('Failed to initialize Alembic object from buffer');
         }
-
-        // 在模型创建完成后初始化动画，如果之前创建了topObjectHandle，也传入用于动画数据
-        await this.initializeAnimations(result, buffer, topObjectHandle);
 
         // Clean up
         mem_buf.delete();
@@ -526,35 +369,8 @@ export class ABCLoader extends THREE.Loader {
       //   return new THREE.Group(); // Return empty group on complete failure
       // }
     }
+    result.animations = animationClips;
     return result;
-  }
-
-  /**
-   * Initialize animations after the hierarchy is built.
-   * This function will be called after createObjectHierarchy finishes.
-   */
-  private async initializeAnimations(result: THREE.Group, buffer: ArrayBuffer, topObjectHandle?: any) {
-    try {
-      // 尝试获取完整的动画数据
-      const allAnimationData = await this.getAnimatedMeshVertices(buffer, topObjectHandle);
-
-      if (allAnimationData && allAnimationData.frames && allAnimationData.frames.length > 0) {
-        console.log(`Successfully retrieved animation data with ${allAnimationData.frames.length} frames`);
-
-        // 遍历场景图，并将动画数据应用到匹配的网格
-        result.traverse((obj) => {
-          if (obj instanceof THREE.Mesh && obj.userData.abcObjectName) {
-            // 为网格设置动画数据
-            this.setupVertexAnimation(obj, allAnimationData);
-          }
-        });
-      } else {
-        console.log('No animation data found in the ABC file');
-      }
-    } catch (e) {
-      console.error('Error initializing animations:', (e as Error).message);
-      // 即使动画数据不可用，我们仍保持网格上的基础动画数据结构
-    }
   }
 
   /**
@@ -654,7 +470,13 @@ export class ABCLoader extends THREE.Loader {
    * @param handle - AlembicObjectHandle to print
    * @param depth - Current depth level for indentation
    */
-  private async createObjectHierarchy(handle: any, depth: number, parentObj: THREE.Object3D, buffer?: ArrayBuffer): Promise<void> {
+  private async createObjectHierarchy(
+    handle: any,
+    depth: number,
+    parentObj: THREE.Object3D,
+    animationClips: THREE.AnimationClip[],
+    buffer?: ArrayBuffer
+  ): Promise<void> {
 
     // Initialize WASM module
     const module = await ABCLoader.initWasmModule();
@@ -675,7 +497,7 @@ export class ABCLoader extends THREE.Loader {
         if (child_i_schema.startsWith("AbcGeom_Xform")) {
           let geo = new THREE.Group();
           parentObj.add(geo);
-          await this.createObjectHierarchy(child_i, depth + 1, geo, buffer);
+          await this.createObjectHierarchy(child_i, depth + 1, geo, animationClips, buffer);
           let xform = module.xformGetMatrix(child_i);
           if (xform) {
             let newXform = new THREE.Matrix4();
@@ -713,22 +535,26 @@ export class ABCLoader extends THREE.Loader {
           let mesh = new THREE.Mesh(geo, material);
           mesh.name = child_i.getName();
 
-          // 初始化动画相关用户数据
-          mesh.userData.abcObjectName = child_i.getName();
-          mesh.userData.originalPositions = positionArray ? new Float32Array(positionArray) : null; // 保存原始顶点
-          mesh.userData.isPlaying = false; // 初始状态为停止播放
+          const vertexCacheClip = this.createVertexCacheAnimationClip(
+            child_i,
+            mesh
+          );
+          if (vertexCacheClip) {
+            mesh.userData.animationClips = [vertexCacheClip];
+            animationClips.push(vertexCacheClip);
+          }
 
           parentObj.add(mesh);
-          await this.createObjectHierarchy(child_i, depth + 1, mesh, buffer);
+          await this.createObjectHierarchy(child_i, depth + 1, mesh, animationClips, buffer);
         } else if (child_i_schema.startsWith("AbcGeom_Camera")) {
           let cam = await this.createCamera(child_i);
           cam.name = child_i.getName();
           parentObj.add(cam);
-          await this.createObjectHierarchy(child_i, depth + 1, cam, buffer);
+          await this.createObjectHierarchy(child_i, depth + 1, cam, animationClips, buffer);
         } else if (child_i_schema === "AbcGeom_Curve_v2") {
           // Handle Alembic Curve_v2 schema
           await this.createCurve(child_i, parentObj);
-          await this.createObjectHierarchy(child_i, depth + 1, parentObj, buffer);
+          await this.createObjectHierarchy(child_i, depth + 1, parentObj, animationClips, buffer);
         } else {
           console.log("unhandled mesh", child_i.getMetaDataSchema());
         }
@@ -738,153 +564,58 @@ export class ABCLoader extends THREE.Loader {
     }
   }
 
-  // This function is used to set up vertex animations for meshes
-  private setupVertexAnimation(mesh: THREE.Mesh, animationData: { frames: Float32Array[], frameTimeInfo?: { start: number, end: number, fps: number } }) {
-    if (!animationData || !animationData.frames || animationData.frames.length === 0) return;
-
-    try {
-      const animationFrames = animationData.frames;
-
-      // 将动画帧存储在网格的用户数据中，以便稍后在动画循环中使用
-      mesh.userData.animationFrames = animationFrames;
-      mesh.userData.currentFrame = 0;
-      mesh.userData.totalFrames = animationFrames.length;
-
-      // 添加动画元数据
-      mesh.userData.startTime = animationData.frameTimeInfo?.start || 0;
-      mesh.userData.endTime = animationData.frameTimeInfo?.end || animationFrames.length - 1;
-      mesh.userData.fps = animationData.frameTimeInfo?.fps || 24; // 默认24fps
-      mesh.userData.animationDuration = mesh.userData.totalFrames / mesh.userData.fps;  // 动画总时长（秒）
-
-      mesh.userData.isPlaying = true;
-      mesh.userData.isPaused = false;
-      mesh.userData.animationStartTime = Date.now(); // 动画开始时间戳
-      mesh.userData.animationCurrentTime = 0; // 当前动画时间（秒）
-
-      // 存储原始位置用于插值计算
-      mesh.userData.originalPositions = (mesh.geometry as THREE.BufferGeometry).getAttribute('position').clone();
-
-      // 初始化插值相关数据
-      mesh.userData.currentVertices = new Float32Array(mesh.userData.originalPositions.array as Float32Array);
-      mesh.userData.nextFrameIndex = 1;
-      mesh.userData.interpolationFactor = 0.0;
-
-      console.log(`Setup animation with ${animationFrames.length} frames for ${mesh.name}, duration: ${mesh.userData.animationDuration}s at ${mesh.userData.fps}fps`);
-    } catch (error) {
-      console.error('Error setting up vertex animation:', error);
-    }
-  }
-  public applyAnimationAtTime(mesh: THREE.Mesh, timeSec: number) {
-    const frames: ArrayLike<number>[] | undefined = mesh.userData.animationFrames;
-    if (!frames || frames.length <= 1) return;
-
-    const fps = mesh.userData.fps ?? 24;
-    const totalFrames = frames.length;
-
-    // 如果你有 duration，用它循环；没有就按 totalFrames/fps
-    const duration = mesh.userData.animationDuration ?? (totalFrames / fps);
-    const t = duration > 0 ? (timeSec % duration) : timeSec;
-
-    const frameTime = t * fps;           // 连续帧
-    const i0 = Math.floor(frameTime) % totalFrames;
-    const i1 = (i0 + 1) % totalFrames;
-    const a = frameTime - Math.floor(frameTime);
-
-    const f0 = frames[i0];
-    const f1 = frames[i1];
-
-    const geom = mesh.geometry as THREE.BufferGeometry;
-    const posAttr = geom.getAttribute('position') as THREE.BufferAttribute;
-    const dst = posAttr.array as Float32Array;
-
-    if (!f0 || !f1 || f0.length !== dst.length || f1.length !== dst.length) return;
-
-    for (let k = 0; k < dst.length; k++) {
-      dst[k] = f0[k] + (f1[k] - f0[k]) * a;
-    }
-    posAttr.needsUpdate = true;
-  }
-
-  public applyAnimationFrame(mesh: THREE.Mesh, deltaTime: number) {
-    const frames: ArrayLike<number>[] | undefined = mesh.userData.animationFrames;
-    if (!frames || frames.length <= 1) return;
-    if (mesh.userData.isPlaying === false) return;
-
-    const totalFrames = frames.length;
-    const fps = mesh.userData.fps ?? 24;
-    const duration = mesh.userData.animationDuration ?? (totalFrames / fps);
-
-    // 累计时间 + 循环
-    let t = (mesh.userData.animationCurrentTime ?? 0) + deltaTime;
-    if (duration > 0) t = t % duration;
-    mesh.userData.animationCurrentTime = t;
-
-    const timePerFrame = 1 / fps;
-    const frameTime = t / timePerFrame;             // 连续帧索引（带小数）
-    const i0 = Math.floor(frameTime) % totalFrames; // 当前帧
-    const i1 = (i0 + 1) % totalFrames;              // 下一帧
-    const a = frameTime - Math.floor(frameTime);    // 插值因子 [0,1)
-
-    const f0 = frames[i0];
-    const f1 = frames[i1] ?? f0;
-
+  private createVertexCacheAnimationClip(handle: any, mesh: THREE.Mesh): THREE.AnimationClip | null {
+    const module = ABCLoader.wasmModule;
     const geometry = mesh.geometry as THREE.BufferGeometry;
-    const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-    if (!posAttr) return;
+    const basePositionAttr = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
 
-    // 直接对底层 array 写入（最快、最稳定）
-    const dst = posAttr.array as Float32Array;
-
-    // 强一致性检查：必须完全一致，否则就会出现“部分顶点没更新=残留”
-    if (!f0 || f0.length !== dst.length || !f1 || f1.length !== dst.length) {
-      console.error(
-        `[ABC] frame size mismatch on mesh=${mesh.name}`,
-        { f0: f0?.length, f1: f1?.length, dst: dst.length }
-      );
-      return;
+    if (!module || !basePositionAttr || !module.getAnimatedMeshVertices) {
+      return null;
     }
 
-    // 插值写满整个 position buffer
-    for (let k = 0; k < dst.length; k++) {
-      const v0 = f0[k];
-      const v1 = f1[k];
-      dst[k] = v0 + (v1 - v0) * a;
+    const animatedFrames = module.getAnimatedMeshVertices(handle);
+    const frameCount = animatedFrames?.size?.() ?? 0;
+    if (frameCount <= 1) {
+      return null;
     }
 
-    posAttr.needsUpdate = true;
+    const vertexValueCount = basePositionAttr.array.length;
+    const morphTargets: THREE.BufferAttribute[] = [];
 
-    // 法线：每帧重算非常耗，建议降频或改为更新 normal attribute
-    const normalEveryN = mesh.userData.normalEveryN ?? 0; // 0=不重算；例如 2/4/8 降频
-    if (normalEveryN > 0) {
-      const nCount = (mesh.userData._normalCounter ?? 0) + 1;
-      mesh.userData._normalCounter = nCount;
-      if (nCount % normalEveryN === 0) {
-        geometry.computeVertexNormals();
-        const nAttr = geometry.getAttribute('normal') as THREE.BufferAttribute | undefined;
-        if (nAttr) nAttr.needsUpdate = true;
+    for (let i = 0; i < frameCount; i++) {
+      const frame = animatedFrames.get(i);
+      const frameValueCount = frame?.size?.() ?? 0;
+      if (frameValueCount !== vertexValueCount) {
+        console.warn(
+          `[ABC] Skip animation for ${mesh.name}: frame size mismatch (${frameValueCount} vs ${vertexValueCount})`
+        );
+        return null;
       }
+
+      const values = new Float32Array(frameValueCount);
+      for (let j = 0; j < frameValueCount; j++) {
+        values[j] = frame.get(j);
+      }
+
+      const morph = new THREE.BufferAttribute(values, 3);
+      morph.name = `abc_morph_${i}`;
+      morphTargets.push(morph);
     }
 
-    // 如果你遇到裁剪异常（不是残影），再打开它
-    // geometry.computeBoundingSphere();
+    geometry.morphAttributes.position = morphTargets;
+    mesh.updateMorphTargets();
 
-    mesh.userData.currentFrame = i0;
-    mesh.userData.nextFrameIndex = i1;
-    mesh.userData.interpolationFactor = a;
-  }
-
-
-  // 设置动画播放状态
-  public setAnimationPlaying(mesh: THREE.Mesh, isPlaying: boolean) {
-    mesh.userData.isPlaying = isPlaying;
-    if (isPlaying) {
-      mesh.userData.animationStartTime = Date.now();
+    const times = new Float32Array(frameCount);
+    const weights = new Float32Array(frameCount * frameCount);
+    const fps = this.defaultAnimationFps;
+    for (let i = 0; i < frameCount; i++) {
+      times[i] = i / fps;
+      weights[(frameCount * i) + i] = 1;
     }
-  }
 
-  // 设置动画播放速度
-  public setAnimationSpeed(mesh: THREE.Mesh, speed: number) {
-    mesh.userData.animationSpeed = speed;
+    const track = new THREE.NumberKeyframeTrack('.morphTargetInfluences', times, weights);
+    const duration = times[times.length - 1] ?? 0;
+    return new THREE.AnimationClip(`${mesh.name || 'abc_mesh'}_vertex_cache`, duration, [track]);
   }
 
   /**
