@@ -1,29 +1,40 @@
-# 这个项目是做什么的？
+# `alembic-wasm` 项目说明 (AGENTS.md)
 
-**ABC文件加载器项目**是一个专门用于在Web浏览器中加载、解析和可视化Alembic(.abc)文件的现代化JavaScript/TypeScript库。它将Vue3前端与WebAssembly(WASM)后端技术结合，以高性能地处理复杂的三维几何和动画数据。
+## 项目定位
 
+`alembic-wasm` 是面向浏览器、Web Worker 与 Node.js 的完整 **Alembic (`.abc` Ogawa 1.8.x) WebAssembly 读写导出层与强类型 TypeScript SDK**，同时通过子路径 `alembic-wasm/three` 提供无侵入的 **Three.js 插件**（`ABCLoader`、`AlembicSceneController`、`AnimationClipBuilder`、`ABCExporter`、`ABCCurve`）。
 
-#  项目结构
+## 目录结构
 
-前端测试项目在项目根目录下，是个vue3的项目
-  - src/loaders/ABCLoader.ts - 核心加载器实现，负责将WebAssembly后端和Three.js前端连接
-  - src/components/ABCViewer.vue - Vue组件，包含简单处理文件上传和3D显示逻辑
-  
-alembic库的WebAssembly模块在AbcWASM目录下
-  - AbcWASM/alembic_echo.cpp - WebAssembly核心代码，处理Alembic文件解析
-  - AbcWASM/xmake.lua - 构建配置文件
+- `xmake.lua` — 根目录 C++17 + Emscripten (`embind`) WebAssembly 构建配置（产物自动输出至 `src/wasm/generated/`）。
+- `package.json` & `tsconfig.json` — 纯净的 `"alembic-wasm"` npm 发布包配置（纯 `tsc` 构建至 `dist/`，根级无任何前端框架或 Vite 打包器耦合）。
+- `src/` — C++ 与 TypeScript 统一源码目录：
+  - `src/cpp/` — C++17 源码与头文件：
+    - `src/cpp/include/abc_wasm/` — 零二次拷贝内存流、异常转换、通用动态类型属性/`GeomParam`、全量 Schema 包装与网格细分/焊接加速核头文件。
+    - `src/cpp/bind_*.cpp` — 模块化拆分的 7 个 Embind 绑定编译单元（Core/Layer、Objects/Echo、Properties/GeomParam、Xform/Camera/Light、PolyMesh/SubD/FaceSet、Curves/Points/NuPatch、Material/Collections）。
+  - `src/index.ts` — 主入口 `"alembic-wasm"`（零框架依赖核心 SDK）。
+  - `src/wasm/` — 跨平台 WASM 加载器、`WasmScratchArena` 线性缓冲复用器、Embind 类型定义与 `generated/` 编译产物。
+  - `src/core/` — `IArchive`/`OArchive`/分层归档、`TimeSampling`、`IObject`/`OObject`、通用 `Properties`、`IGeomParam`/`OGeomParam` 及 11 类标准 Schema。
+  - `src/three/` — 子入口 `"alembic-wasm/three"`（`three` 为可选 `peerDependency`）。
+- `tests/` — 基于真实 WASM 运行时的 Vitest 端到端测试套件。
+- `example/` — 独立的纯 **HTML + CSS + Vanilla JS** 交互式三维示例工程（自带独立 `example/package.json` 与开发服务器配置，与根库解耦）。
 
-# 如何调试这个项目
+## 常用命令
 
-前端测试项目
-1. 安装依赖 `npm install`
-2. 启动开发服务器 `npm run dev`
-alembic库的WebAssembly模块
-1. 安装依赖 `xrepo install alembic`
-2. 查看xmake配置，确保xmake配了emcc的工具链：`xmake -f -v -D`
-3. 构建WASM模块：`xmake build`
-
-
-# 测试资产
-
-暂时是 AbcWASM/lion_skeleton.abc 这个资产
+1. 编译 C++ WASM 模块（需安装 `xmake` 与 `emscripten`）：
+   ```bash
+   npm run build:wasm
+   ```
+2. 类型检查与单元测试：
+   ```bash
+   npm run typecheck
+   npm test
+   ```
+3. 构建 npm 发布产物（纯 `tsc` 输出至 `dist/`）：
+   ```bash
+   npm run build:ts
+   ```
+4. 启动独立原生 HTML + JS 示例开发服务器：
+   ```bash
+   cd example && npm install && npm run dev
+   ```

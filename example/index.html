@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>alembic-wasm Studio — WebAssembly Alembic Read/Write &amp; Three.js Workbench</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app" class="studio-shell">
+      <!-- Top Header / Toolbar -->
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">ABC</span>
+          <div class="brand-text">
+            <h1>alembic-wasm</h1>
+            <span id="wasm-version-badge" class="badge">Initializing WASM…</span>
+          </div>
+        </div>
+
+        <div class="toolbar-group">
+          <label class="field-inline" for="preset-select">
+            <span>Procedural Demo</span>
+            <select id="preset-select" aria-label="Select Procedural Demo"></select>
+          </label>
+
+          <label class="btn btn-secondary" for="file-input">
+            Open .abc
+            <input id="file-input" type="file" accept=".abc" hidden />
+          </label>
+
+          <button id="btn-export-abc" class="btn btn-secondary" type="button" title="Export current Three.js scene to .abc and download">
+            Export .abc
+          </button>
+
+          <button id="btn-roundtrip" class="btn btn-accent" type="button" title="Export Three.js scene via ABCExporter and reload via ABCLoader in memory">
+            Round-Trip Test
+          </button>
+        </div>
+
+        <div class="toolbar-group">
+          <label class="field-inline" for="camera-select">
+            <span>Camera</span>
+            <select id="camera-select">
+              <option value="__orbit__">Orbit Viewport</option>
+            </select>
+          </label>
+
+          <button id="btn-fit-view" class="btn btn-ghost" type="button">Fit View</button>
+          <button id="btn-wireframe" class="btn btn-ghost" type="button" aria-pressed="false">Wireframe</button>
+          <button id="btn-bounds" class="btn btn-ghost" type="button" aria-pressed="false">Bounds</button>
+          <button id="btn-grid" class="btn btn-ghost is-active" type="button" aria-pressed="true">Grid</button>
+        </div>
+      </header>
+
+      <!-- Main Workspace -->
+      <main class="workspace">
+        <!-- 3D Viewport -->
+        <section id="viewport-pane" class="viewport-pane">
+          <canvas id="viewport-canvas"></canvas>
+
+          <!-- Drag & Drop Overlay -->
+          <div id="drop-overlay" class="drop-overlay" hidden>
+            <div class="drop-card">
+              <strong>Drop Ogawa <code>.abc</code> Archive</strong>
+              <span>Instant zero-double-copy WebAssembly load</span>
+            </div>
+          </div>
+
+          <!-- HUD Stats -->
+          <div class="viewport-hud">
+            <div class="hud-row">
+              <span class="hud-label">Archive</span>
+              <strong id="hud-filename">—</strong>
+            </div>
+            <div class="hud-row">
+              <span class="hud-label">Preset Note</span>
+              <span id="hud-description">Loading procedural Alembic scene…</span>
+            </div>
+            <div class="hud-metrics">
+              <span>Objects: <strong id="hud-objects">0</strong></span>
+              <span>Meshes: <strong id="hud-meshes">0</strong></span>
+              <span>Triangles: <strong id="hud-triangles">0</strong></span>
+              <span>Size: <strong id="hud-bytes">0 KB</strong></span>
+            </div>
+          </div>
+
+          <!-- Status Toast -->
+          <div id="status-toast" class="status-toast" hidden></div>
+        </section>
+
+        <!-- Right Archive & Object Inspector -->
+        <aside class="inspector-pane">
+          <nav class="inspector-tabs" role="tablist">
+            <button class="tab-btn is-active" data-tab="hierarchy" role="tab" aria-selected="true" type="button">
+              Hierarchy
+            </button>
+            <button class="tab-btn" data-tab="details" role="tab" aria-selected="false" type="button">
+              Node Properties
+            </button>
+            <button class="tab-btn" data-tab="archive" role="tab" aria-selected="false" type="button">
+              Archive &amp; Echo
+            </button>
+          </nav>
+
+          <!-- Tab 1: Hierarchy Tree -->
+          <div id="tab-hierarchy" class="tab-panel is-active">
+            <div class="panel-section">
+              <div class="section-header">
+                <h2>IObject Hierarchy</h2>
+                <span id="tree-count-badge" class="mono-pill">0 nodes</span>
+              </div>
+              <div id="hierarchy-tree" class="hierarchy-tree"></div>
+            </div>
+          </div>
+
+          <!-- Tab 2: Selected Node Properties -->
+          <div id="tab-details" class="tab-panel" hidden>
+            <div class="panel-section">
+              <div class="section-header">
+                <h2 id="selected-node-title">Select an Object</h2>
+                <span id="selected-node-schema" class="schema-tag">—</span>
+              </div>
+              <div id="node-details-body" class="details-body">
+                <p class="empty-hint">Click any node in the Hierarchy tab to inspect its Alembic metadata, TimeSampling, ArbGeomParams, and raw Properties.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 3: Archive Info & AbcEcho -->
+          <div id="tab-archive" class="tab-panel" hidden>
+            <div class="panel-section">
+              <div class="section-header">
+                <h2>Archive Metadata</h2>
+              </div>
+              <div id="archive-meta-grid" class="kv-list"></div>
+            </div>
+
+            <div class="panel-section">
+              <div class="section-header">
+                <h2>TimeSamplings</h2>
+              </div>
+              <div id="timesamplings-list" class="kv-list"></div>
+            </div>
+
+            <div class="panel-section echo-section">
+              <div class="section-header">
+                <h2>AbcEcho Structure Dump</h2>
+                <button id="btn-refresh-echo" class="btn btn-xs" type="button">Refresh</button>
+              </div>
+              <pre id="echo-output" class="echo-pre"></pre>
+            </div>
+          </div>
+        </aside>
+      </main>
+
+      <!-- Bottom Playback Timeline Bar -->
+      <footer class="timeline-bar">
+        <div class="transport-controls">
+          <button id="btn-step-prev" class="btn btn-icon" type="button" title="Previous Frame">&laquo;</button>
+          <button id="btn-play-toggle" class="btn btn-primary btn-play" type="button">Pause</button>
+          <button id="btn-step-next" class="btn btn-icon" type="button" title="Next Frame">&raquo;</button>
+        </div>
+
+        <div class="scrubber-wrap">
+          <input
+            id="timeline-slider"
+            class="timeline-slider"
+            type="range"
+            min="0"
+            max="1"
+            step="0.001"
+            value="0"
+            aria-label="Timeline Scrubber"
+          />
+          <div class="time-readout">
+            <span>t = <strong id="readout-time">0.000s</strong></span>
+            <span>Frame <strong id="readout-frame">0 / 1</strong></span>
+            <span>Range <strong id="readout-range">[0.00s, 0.00s]</strong> @ <strong id="readout-fps">24</strong> fps</span>
+          </div>
+        </div>
+
+        <div class="playback-options">
+          <label class="field-inline" for="interp-select">
+            <span>Interp</span>
+            <select id="interp-select">
+              <option value="linear" selected>Linear (Sub-frame)</option>
+              <option value="step">Step (Floor Sample)</option>
+            </select>
+          </label>
+
+          <label class="field-inline" for="speed-select">
+            <span>Speed</span>
+            <select id="speed-select">
+              <option value="0.25">0.25x</option>
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1.0x</option>
+              <option value="2">2.0x</option>
+            </select>
+          </label>
+
+          <label class="checkbox-inline">
+            <input id="chk-advect" type="checkbox" checked />
+            <span>Vel Advect</span>
+          </label>
+
+          <label class="checkbox-inline">
+            <input id="chk-loop" type="checkbox" checked />
+            <span>Loop</span>
+          </label>
+        </div>
+      </footer>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
